@@ -2,23 +2,25 @@ require "yajl"
 require "tire"
 require 'rubygems'
 require 'socket' #get the hostname and ip of the node
+require 'digest/md5' #generate and id
+require 'json'
 
-class ApplicationLogs
-	attr_reader :id, :log_source, :log_filename, :log_datetime, :log_channel, :log_type, :log_message
+class ApplicationLog
+	attr_reader  :log_source, :log_filename, :log_datetime, :log_channel, :log_type, :log_message, :id, :type
 	def initialize(attributes = {})
 		@attributes = attributes
 		@attributes.each_pair { |name,value| instance_variable_set :"@#{name}", value}
 	end
-	def type
-		'article'
+	def self.type
+		'applicationlog'
 	end
 	def to_indexed_json
 		@attributes.to_json
 	end
 	def self.search(text)
 		unless text.empty?
-			Tire.search('applicationlogs') do
- 				query do
+			Tire.search('applicationlog', from: "0", size: "100") do
+				query do
     				string "log_message:#{text}*"
   				end
 			end.results
@@ -32,11 +34,17 @@ class ApplicationLogs
 				#open and parse file
 				if File.readable?(file_name)
 					name = File::basename(file_name)
-					id = 1
+					line_number = 0
 					IO.foreach(file_name){|line| 
-
-						log_array << log_from_line(line,name,id)
-						id = id + 1
+						log_array << log_from_line(line,name)						
+						line_number += 1
+						#puts "#{line_number}====>#{line}"
+						if line_number % 100000 == 0
+							#store index every 1000000 records
+							puts "Import Log into ES #{line_number}"
+							import_into_es(log_array)
+							log_array = Array.new()
+						end
 					}
 					puts "Import Log into ES"
 					import_into_es(log_array)
@@ -58,10 +66,10 @@ class ApplicationLogs
 		#exit
 	end
 	private
-	 def self.log_from_line(line,name,id)
+	 def self.log_from_line(line,name)
 	 	line.strip!
 	 	name.strip!
-	 	log_source 		= "#{Socket.gethostname;Socket.ip_address_list[1].ip_address}"
+	 	log_source 		= "#{Socket.gethostname};#{Socket.ip_address_list[1].ip_address}"
 	 	log_filename 	= name.empty? ? "Unknown" : name
 	 	line_array 		= Array.new()
 	 	line_array 		= line.split(/\s/)
@@ -74,28 +82,33 @@ class ApplicationLogs
 	 	elsif line_array.grep (/failure/i)
 	 		log_type = "error"
 	 	end
-	 	log = ApplicationLogs.new log_source: log_source,
+	 	id = Digest::MD5.hexdigest("#{log_source}_#{log_datetime}_#{log_message}")
+	 	log = ApplicationLog.new log_source: log_source,
 							  log_filename: log_filename,
 							  log_datetime: log_datetime,
 							  log_channel: log_channel,
 							  log_type: log_type,
-							  id: id,
-							  log_message: log_message
+							  log_message: log_message,
+							  type: ApplicationLog.type,
+							  id: id
 		log	
 	 end
 	 def self.import_into_es(log_array)
 	 	#create mappings
-	 	Tire.index 'applicationlogs' do
+	 	Tire.index 'applicationlog' do
 	 		delete	 			
   			import log_array
   			refresh
 		end
 	 end
 end
-puts "Into the void"
+#puts "Into the void"
 ARGV.each do |file|
-	ApplicationLogs.load_file(file)
+	ApplicationLog.load_file(file)
 end
-ApplicationLogs.search("moto").each do |app|
-	puts app.to_indexed_json
-end
+#results = ApplicationLog.search("338180103")
+#p results.size
+#ApplicationLog.search("338180103").each do |app|
+#	puts JSON.pretty_generate(JSON.parse(app.to_indexed_json))
+	#puts app.to_indexed_json
+#end
